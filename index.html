@@ -119,7 +119,10 @@ ul.bullets > li.sub::before { content: "\2013"; color: var(--muted); }
 @page { size: A4; margin: 0; }
 @media print {
   body { background: #fff; padding: 0; }
-  aside { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Force EVERY painted background/border through to paper (section rules,
+     skill dots, sidebar, accent tick) regardless of the browser's
+     "background graphics" print setting. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .print-btn { display: none; }
   a { color: inherit; }  /* ink links on paper; the PR numbers read as text */
   /* JS-paginated copy: one .page per A4 sheet, sidebar AND top/bottom margins
