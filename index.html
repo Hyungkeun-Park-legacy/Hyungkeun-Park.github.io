@@ -44,6 +44,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #pages { position: absolute; left: -9999px; top: 0; }
 .page { width: 210mm; height: 297mm; overflow: hidden; }
 .page main { height: 100%; overflow: hidden; }
+.page main > :first-child { margin-top: 0; }  /* TeX drops vspace at a page top */
 .sec-head-grp { margin-top: 26px; }  /* detached section header (paginated copy) */
 aside {
   background: var(--sidebarbg); color: var(--sidebarfg);
@@ -124,7 +125,7 @@ ul.bullets > li.sub::before { content: "\2013"; color: var(--muted); }
      "background graphics" print setting. */
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .print-btn { display: none; }
-  a { color: inherit; }  /* ink links on paper; the PR numbers read as text */
+  /* links keep the accent ink on paper, as in the Overleaf original */
   /* JS-paginated copy: one .page per A4 sheet, sidebar AND top/bottom margins
      repeat on every page — the full Overleaf page format. */
   body.paginated .sheet { display: none; }
@@ -169,43 +170,92 @@ ul.bullets > li.sub::before { content: "\2013"; color: var(--muted); }
   var flow = document.getElementById('flow');
   var pagesEl = document.getElementById('pages');
 
+  // Token stream: headers (section titles, entry headers) must not end a page;
+  // list items are individually placeable so bullet lists split across pages the
+  // way LaTeX itemize does, filling each page to the bottom margin.
+  function tokenize() {
+    var toks = [];
+    function pushList(ul) {
+      Array.prototype.slice.call(ul.children).forEach(function (li) {
+        toks.push({ el: li.cloneNode(true), list: true });
+      });
+    }
+    Array.prototype.slice.call(flow.querySelector('main').children).forEach(function (el) {
+      if (el.tagName !== 'SECTION') { toks.push({ el: el.cloneNode(true) }); return; }
+      var head = document.createElement('div');
+      head.className = 'sec-head-grp';
+      head.appendChild(el.querySelector('h2').cloneNode(true));
+      head.appendChild(el.querySelector('.rule').cloneNode(true));
+      toks.push({ el: head, header: true });
+      Array.prototype.slice.call(el.children).forEach(function (k) {
+        if (k.tagName === 'H2' || k.className === 'rule') { return; }
+        if (k.classList.contains('item')) {
+          toks.push({ el: k.querySelector('.entry-h').cloneNode(true), header: true });
+          pushList(k.querySelector('ul'));
+        } else if (k.tagName === 'UL') {
+          pushList(k);
+        } else { toks.push({ el: k.cloneNode(true) }); }
+      });
+    });
+    return toks;
+  }
+
   function paginate() {
     pagesEl.innerHTML = '';
     var srcAside = flow.querySelector('aside');
-    var blocks = [];
-    Array.prototype.slice.call(flow.querySelector('main').children).forEach(function (el) {
-      var c = el.cloneNode(true);
-      if (el.tagName === 'SECTION') {
-        var head = document.createElement('div');
-        head.className = 'sec-head-grp';
-        head.setAttribute('data-header', '1');
-        head.appendChild(c.querySelector('h2'));
-        head.appendChild(c.querySelector('.rule'));
-        blocks.push(head);
-        Array.prototype.slice.call(c.children).forEach(function (k) { blocks.push(k); });
-      } else { blocks.push(c); }
-    });
+    var m, curUl, placed;
 
     function newPage() {
       var p = document.createElement('div');
       p.className = 'page';
       p.appendChild(srcAside.cloneNode(true));
-      var m = document.createElement('main');
+      m = document.createElement('main');
       p.appendChild(m);
       pagesEl.appendChild(p);
-      return m;
+      curUl = null;
+      placed = 0;  // non-carry tokens on this page
+    }
+    function fits() { return m.scrollHeight <= m.clientHeight; }
+    function mkUl() {
+      var u = document.createElement('ul');
+      u.className = 'bullets';
+      m.appendChild(u);
+      return u;
     }
 
-    var m = newPage();
-    blocks.forEach(function (b) {
-      m.appendChild(b);
-      if (m.scrollHeight > m.clientHeight && m.children.length > 1) {
-        var carry = [b];
-        var prev = b.previousElementSibling;  // a section header never ends a page
-        if (prev && prev.getAttribute && prev.getAttribute('data-header')) carry.unshift(prev);
-        m = newPage();
-        carry.forEach(function (c2) { m.appendChild(c2); });
+    newPage();
+    var carry = [];  // trailing headers awaiting their first content token
+    tokenize().forEach(function (tok) {
+      if (tok.header) {
+        m.appendChild(tok.el);
+        curUl = null;
+        carry.push(tok.el);
+        if (!fits() && placed > 0) {  // header spilled: move the carry chain
+          newPage();
+          carry.forEach(function (h) { m.appendChild(h); });
+        }
+        return;
       }
+      if (tok.list) {
+        if (!curUl) { curUl = mkUl(); }
+        curUl.appendChild(tok.el);
+      } else {
+        m.appendChild(tok.el);
+        curUl = null;
+      }
+      if (!fits() && placed > 0) {
+        // move this token (and any header chain above it) to a fresh page
+        var movedUlWasNew = tok.list && curUl.children.length === 1;
+        if (tok.list) { curUl.removeChild(tok.el); if (movedUlWasNew) { m.removeChild(curUl); } }
+        else { m.removeChild(tok.el); }
+        var chain = carry.slice();
+        newPage();
+        chain.forEach(function (h) { m.appendChild(h); });
+        if (tok.list) { curUl = mkUl(); curUl.appendChild(tok.el); }
+        else { m.appendChild(tok.el); }
+      }
+      placed += 1;
+      carry = [];
     });
     document.body.classList.add('paginated');
   }
